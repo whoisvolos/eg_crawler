@@ -1,0 +1,4 @@
+beautifulsoup4==4.4.1
+colorama==0.3.3
+gevent==1.0.1
+requests==2.4.3
