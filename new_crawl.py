@@ -20,17 +20,37 @@ if len(sys.argv) < 2:
 search_str = sys.argv[1].encode('utf8')
 print 'Searching for "{s}"'.format(s=search_str)
 
-pool = gevent.pool.Pool(config.PARSE_POOL_SIZE)
+pool = gevent.pool.Pool(config.SEARCH_POOL_SIZE)
+parse_pool = gevent.pool.Pool(config.PARSE_POOL_SIZE)
 download_pool = gevent.pool.Pool(config.DOWNLOAD_POOL_SIZE)
+search_file_pool = gevent.pool.Pool(100)
 
 pf_regex = re.compile(r'[\/\\\:\,\.\;\!\?\-\s]+', re.IGNORECASE)
-ext_regex = re.compile(r'\.pdf|\.jpg|\.jpeg|\.ps|\.eps|\.tex|\.latex', re.IGNORECASE)
 
+
+''' Clean links for PDF page (they can start with hostname or just /) '''
 def clean_link(link):
     if link.startswith('/'):
         return config.HOST_NAME + link
     else:
         return link
+
+
+''' Updates searches.txt in every article directory '''
+def update_searches(doc_path, new_search_str):
+    new_search_str = new_search_str.lower()
+    filename = os.path.join(doc_path, config.SEARCH_TAG_FILE)
+    if not os.path.isfile(filename):
+        with open(filename, 'a') as f:
+            f.write(new_search_str + '\n')
+            return
+    with open(filename, 'r') as f:
+        lines = (l.strip() for l in f.readlines())
+        if new_search_str in lines:
+            return
+    with open(filename, 'a') as f:
+        f.write(new_search_str + '\n')
+
 
 ''' Authenticates user. Returns auth cookie '''
 def authenticate(url, login, pwd):
@@ -97,14 +117,13 @@ def download_document(url, filename, cookies=None, tries=0):
         )
         return
 
-    '''
     print '{start}[ INFO ]{end} Downloading {url} -> {fn}'.format(
         start=Style.BRIGHT,
         end=Style.RESET_ALL,
         url=url,
         fn=filename
     )
-    '''
+
     cookies = cookies or {}
     r = requests.get(url, cookies=cookies, stream=True)
     if r.status_code == 200:
@@ -112,7 +131,7 @@ def download_document(url, filename, cookies=None, tries=0):
             for chunk in r.iter_content(chunk_size=4096):
                 if chunk:
                     f.write(chunk)
-        print '{start}[  OK  ]{end} Downloading "{url}" -> "{fn}" done'.format(
+        print '{start}[  OK  ]{end} Finished {url} -> {fn} done'.format(
             url=url,
             start=Fore.GREEN,
             end=Style.RESET_ALL,
@@ -143,7 +162,7 @@ def crawl_for_pdf(url, doc_path, cookies=None, tries=0):
     r = requests.get(url, cookies=cookies)
     if r.status_code == 200:
         soup = BeautifulSoup(r.text, 'html.parser')
-        links = list(set([l.attrs['href'] for l in soup.find_all('a') if ext_regex.search(l.attrs['href'])]))
+        links = list(set([l.attrs['href'] for l in soup.find_all('a') if config.DOWLOAD_EXTENSIONS_RE.search(l.attrs['href'])]))
         links = map(clean_link, links)
         for link in links:
             filename = None
@@ -158,15 +177,16 @@ def crawl_for_pdf(url, doc_path, cookies=None, tries=0):
                     e=e,
                     dp=doc_path
                 )
-                pool.spawn(crawl_for_pdf, url=url, doc_path=doc_path, cookies=cookies, tries=tries+1)
+                parse_pool.spawn(crawl_for_pdf, url=url, doc_path=doc_path, cookies=cookies, tries=tries+1)
     else:
         print '{start}[ WARN ]{end} Reparsing PDF page "{url}" due to HTTP status {st}'.format(
             start=Fore.YELLOW,
-            end=0,
+            end=Style.RESET_ALL,
             url=url,
             st=r.status_code
         )
-        pool.spawn(crawl_for_pdf, url=url, doc_path=doc_path, cookies=cookies, tries=tries+1)
+        parse_pool.spawn(crawl_for_pdf, url=url, doc_path=doc_path, cookies=cookies, tries=tries+1)
+
 
 ''' Finds links on given search page '''
 def crawl_search(url, cookies=None):
@@ -185,9 +205,20 @@ def crawl_search(url, cookies=None):
             name = name.encode('utf8')
             name = pf_regex.sub(' ', name)
             doc_path = os.path.join(config.DOWNLOAD_DIR, name)
-            if not os.path.exists(doc_path):
+
+            already_downloaded = os.path.exists(doc_path)
+
+            if not already_downloaded:
                 os.mkdir(doc_path)
-            pool.spawn(crawl_for_pdf, url=url, doc_path=doc_path, cookies=cookies, tries=0)
+            search_file_pool.spawn(update_searches, doc_path=doc_path, new_search_str=search_str)
+            if not already_downloaded:
+                parse_pool.spawn(crawl_for_pdf, url=url, doc_path=doc_path, cookies=cookies, tries=0)
+            else:
+                print '{start}[ WARN ]{end} Folder for "{name}" already exists'.format(
+                    start=Fore.YELLOW,
+                    end=Style.RESET_ALL,
+                    name=name
+                )
     else:
         print '{start}[ FAIL ]{end} Parsing "{url}"'.format(
             url=url,
@@ -214,6 +245,7 @@ if cookies is not None:
         pool.spawn(crawl_search, url=url, cookies=cookies)
     pool.join()
     download_pool.join()
+    search_file_pool.join()
 else:
     print "Can not authenticate."
     exit(-1)
