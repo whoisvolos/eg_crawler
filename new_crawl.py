@@ -13,12 +13,31 @@ import config
 import sys
 
 
+class Prefices:
+    INFO = '{start}[ INFO ]{end}'.format(
+        start=Style.BRIGHT,
+        end=Style.RESET_ALL
+    )
+    WARN = '{start}[ WARN ]{end}'.format(
+        start=Fore.YELLOW,
+        end=Style.RESET_ALL
+    )
+    FAIL = '{start}[ FAIL ]{end}'.format(
+        start=Fore.RED,
+        end=Style.RESET_ALL
+    )
+    OK = '{start}[  OK  ]{end}'.format(
+        start=Fore.GREEN,
+        end=Style.RESET_ALL
+    )
+
+
 if len(sys.argv) < 2:
     print "Use with 1st argument as search string"
     exit (-1)
 
 search_str = sys.argv[1].encode('utf8')
-print 'Searching for "{s}"'.format(s=search_str)
+print '{p} Searching for "{s}"'.format(s=search_str, p=Prefices.INFO)
 
 pool = gevent.pool.Pool(config.SEARCH_POOL_SIZE)
 parse_pool = gevent.pool.Pool(config.PARSE_POOL_SIZE)
@@ -93,7 +112,7 @@ def search(query, rpp=10, cookies=None):
                     if len(ll) > 0:
                         pages = int(ll[len(ll) - 1].text.strip())
         if pages is not None:
-            print 'Found {pgs} search page(s)'.format(pgs=pages)
+            print '{p} Found {pgs} search page(s)'.format(pgs=pages, p=Prefices.INFO)
             pages_to_crawl = ['{host}/discover?scope=%2F&rpp={rpp}&page={page}&query={query}&group_by=none'.format(
                 query=query,
                 rpp=rpp,
@@ -102,27 +121,21 @@ def search(query, rpp=10, cookies=None):
             ) for l in range(1, pages + 1)]
             return pages_to_crawl
         else:
-            print 'Can not find list of search pages'
+            print '{p} Can not find list of search pages'.format(Prefices.WARN)
             return []
 
 
 ''' Donwloads PDF file '''
 def download_document(url, filename, cookies=None, tries=0):
     if tries > config.MAX_DOWNLOAD_TRIES:
-        print '{start}[ FAIL ]{end} Downloading "{url}" to "{fn}" failed: tries exceeded'.format(
+        print '{p} Downloading "{url}" to "{fn}" failed: tries exceeded'.format(
             url=url,
-            start=Fore.RED,
-            end=Style.RESET_ALL,
-            fn=filename
+            fn=filename,
+            p=Prefices.FAIL
         )
         return
 
-    print '{start}[ INFO ]{end} Downloading {url} -> {fn}'.format(
-        start=Style.BRIGHT,
-        end=Style.RESET_ALL,
-        url=url,
-        fn=filename
-    )
+    print '{p} Downloading {url} -> {fn}'.format(url=url, fn=filename, p=Prefices.INFO)
 
     cookies = cookies or {}
     r = requests.get(url, cookies=cookies, stream=True)
@@ -131,18 +144,12 @@ def download_document(url, filename, cookies=None, tries=0):
             for chunk in r.iter_content(chunk_size=4096):
                 if chunk:
                     f.write(chunk)
-        print '{start}[  OK  ]{end} Finished {url} -> {fn} done'.format(
-            url=url,
-            start=Fore.GREEN,
-            end=Style.RESET_ALL,
-            fn=filename
-        )
+        print '{p} Downloading {url} -> {fn} done'.format(url=url, fn=filename, p=Prefices.OK)
     else:
-        print '{start}[ WARN ]{end} {url} failed due to status {status}'.format(
+        print '{p} Downloading {url} failed due to status {status}'.format(
             url=url,
-            start=Fore.YELLOW,
-            end=Style.RESET_ALL,
-            status=r.status_code
+            status=r.status_code,
+            p=Prefices.WARN
         )
         download_pool.spawn(download_document, url=url, filename=filename, cookies=cookies, tries=tries+1)
 
@@ -150,11 +157,10 @@ def download_document(url, filename, cookies=None, tries=0):
 ''' Finds PDF links on page '''
 def crawl_for_pdf(url, doc_path, cookies=None, tries=0):
     if tries > config.MAX_DOWNLOAD_TRIES:
-        print '{start}[ FAIL ]{end} Parsing PDF links page "{url}" for doc_path "{dp}"'.format(
+        print '{p} Parsing PDF links page "{url}" for doc_path "{dp}"'.format(
             url=url,
-            start=Fore.RED,
-            end=Style.RESET_ALL,
-            dp=doc_path
+            dp=doc_path,
+            p=Prefices.FAIL
         )
         return
 
@@ -170,20 +176,18 @@ def crawl_for_pdf(url, doc_path, cookies=None, tries=0):
                 filename = os.path.join(doc_path, link.split('/')[-1].split('#')[0].split('?')[0].encode('utf8'))
                 download_pool.spawn(download_document, url=link, filename=filename, cookies=cookies, tries=0)
             except UnicodeDecodeError as e:
-                print '{start}[ WARN ]{end} Reparsing PDF page {url} -> {dp} due to "{e}"'.format(
+                print '{p} Reparsing PDF page {url} -> {dp} due to "{e}"'.format(
                     url=url,
-                    start=Fore.YELLOW,
-                    end=Style.RESET_ALL,
                     e=e,
-                    dp=doc_path
+                    dp=doc_path,
+                    p=Prefices.WARN
                 )
                 parse_pool.spawn(crawl_for_pdf, url=url, doc_path=doc_path, cookies=cookies, tries=tries+1)
     else:
-        print '{start}[ WARN ]{end} Reparsing PDF page "{url}" due to HTTP status {st}'.format(
-            start=Fore.YELLOW,
-            end=Style.RESET_ALL,
+        print '{p} Reparsing PDF page {url} failed due to HTTP status {st}'.format(
             url=url,
-            st=r.status_code
+            st=r.status_code,
+            p=Prefices.WARN
         )
         parse_pool.spawn(crawl_for_pdf, url=url, doc_path=doc_path, cookies=cookies, tries=tries+1)
 
@@ -195,11 +199,10 @@ def crawl_search(url, cookies=None):
     if r.status_code == 200:
         soup = BeautifulSoup(r.text, 'html.parser')
         new_docs = [(c.text.strip(), config.HOST_NAME + c.attrs['href']) for divs in soup.find_all('div', 'artifact-title') for c in divs.children if c.name == 'a']
-        print '{start}[  OK  ]{end} Parsing "{url}", found {num} document(s)'.format(
+        print '{p} Parsing "{url}", found {num} document(s)'.format(
             url=url,
             num=len(new_docs),
-            start=Fore.GREEN,
-            end=Style.RESET_ALL
+            p=Prefices.OK
         )
         for (name, url) in new_docs:
             name = name.encode('utf8')
@@ -214,17 +217,9 @@ def crawl_search(url, cookies=None):
             if not already_downloaded:
                 parse_pool.spawn(crawl_for_pdf, url=url, doc_path=doc_path, cookies=cookies, tries=0)
             else:
-                print '{start}[ WARN ]{end} Folder for "{name}" already exists'.format(
-                    start=Fore.YELLOW,
-                    end=Style.RESET_ALL,
-                    name=name
-                )
+                print '{p} Folder for "{name}" already exists'.format(name=name, p=Prefices.WARN)
     else:
-        print '{start}[ FAIL ]{end} Parsing "{url}"'.format(
-            url=url,
-            start=Fore.RED,
-            end=Style.RESET_ALL
-        )
+        print '{p} Parsing "{url}" failed'.format(url=url, p=Prefices.FAIL)
 
 
 colorama.init(autoreset=True)
@@ -247,5 +242,5 @@ if cookies is not None:
     download_pool.join()
     search_file_pool.join()
 else:
-    print "Can not authenticate."
+    print '{p} Can not authenticate.'.format(p=Prefices.FAIL)
     exit(-1)
